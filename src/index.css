@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/* Use Sarabun (Thai) as the global UI font */
+:root {
+  font-family: "Sarabun", system-ui, -apple-system, sans-serif;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+/* Thin, modern scrollbars for the panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(71 85 105) transparent;
+}

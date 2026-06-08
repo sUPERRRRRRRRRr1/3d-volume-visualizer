@@ -1,0 +1,29 @@
+{
+  "name": "solid-of-revolution-visualizer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/sarabun": "^5.2.8",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "katex": "^0.17.0",
+    "mathjs": "^15.2.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-katex": "^3.1.0",
+    "three": "^0.184.0",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tailwindcss": "^4.3.0",
+    "vite": "^8.0.16"
+  }
+}
