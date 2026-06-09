@@ -21,11 +21,19 @@ export const useAppStore = create((set) => ({
   axis: 'x', // 'x' | 'y'
   method: 'disk', // 'disk' (disk/washer) | 'shell'
 
+  // --- Axis of revolution offset: revolve about the line y = k (axis 'x') or
+  //     x = k (axis 'y'). 0 => revolve about the coordinate axis itself. ---
+  axisOffset: 0,
+
   // --- Known cross-section shape (perpendicular to the X axis) ---
   crossSection: 'square', // 'square' | 'semicircle' | 'eqTriangle' | 'rightTriangle'
 
   // --- Slices / Riemann approximation ---
   n: 12,
+  riemannRule: 'mid', // 'left' | 'mid' | 'right' | 'trapezoid' — sample rule per slab
+
+  // --- Arc length & surface area of revolution (single curve only) ---
+  showArcSurface: false,
 
   // --- Center viewport mode ---
   viewMode: '2d', // '2d' | '3d'
@@ -42,8 +50,14 @@ export const useAppStore = create((set) => ({
   manualIntersections: null,
 
   // --- Display toggles ---
-  showSlices: true,
+  showSlices: true, // governs the 2D Riemann rects + cross-section prisms
   showSolid: true,
+
+  // --- 3D revolution display mode (independent of the 2D rects) ---
+  solidView: 'both', // 'both' | 'solid' (smooth only) | 'slices' (approximation only)
+
+  // --- Which result card is hovered → highlight that part in 3D ---
+  hoveredResult: null, // null | 'volume' | 'area' | 'arc' | 'surface'
 
   // ---------- setters ----------
   setF: (v) => set({ fInput: v }),
@@ -56,8 +70,11 @@ export const useAppStore = create((set) => ({
   setMode: (v) => set({ mode: v }),
   setAxis: (v) => set({ axis: v }),
   setMethod: (v) => set({ method: v }),
+  setAxisOffset: (v) => set({ axisOffset: v }),
   setCrossSection: (v) => set({ crossSection: v }),
   setN: (v) => set({ n: v }),
+  setRiemannRule: (v) => set({ riemannRule: v }),
+  setShowArcSurface: (v) => set({ showArcSurface: v }),
   setViewMode: (v) => set({ viewMode: v }),
   setHighlightEnabled: (v) => set({ highlightEnabled: v }),
   setHighlightX: (v) => set({ highlightX: v }),
@@ -66,6 +83,8 @@ export const useAppStore = create((set) => ({
   setManualIntersections: (v) => set({ manualIntersections: v }),
   toggleSlices: () => set((s) => ({ showSlices: !s.showSlices })),
   toggleSolid: () => set((s) => ({ showSolid: !s.showSolid })),
+  setSolidView: (v) => set({ solidView: v }),
+  setHoveredResult: (v) => set({ hoveredResult: v }),
 }))
 
 // Dev-only handle for quick inspection/automation in the browser console.

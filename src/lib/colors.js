@@ -24,3 +24,13 @@ export const COLORS3D = {
   axisZ: '#818cf8', // indigo-400
   revolveAxis: '#fbbf24', // amber — the axis of revolution
 }
+
+// Result-hover highlight palette — warm/bright hues chosen to contrast with the
+// blue solid and the dark navy background, so the highlighted part clearly pops.
+// (Only one highlight shows at a time; the slabs are hidden while hovering.)
+export const HIGHLIGHT = {
+  volume: '#fb923c', // orange  — the filled 3D body
+  area: '#a3e635', // lime    — the flat 2D region that gets revolved
+  arc: '#ffffff', // white   — the generating curve f(x)
+  surface: '#e879f9', // fuchsia — the outer skin
+}

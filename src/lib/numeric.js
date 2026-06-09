@@ -82,3 +82,14 @@ export function bisection(fn, lo, hi, tol = 1e-7, maxIter = 100) {
 export function clamp(v, min, max) {
   return v < min ? min : v > max ? max : v
 }
+
+/**
+ * Evaluation point within a sub-interval [lo, hi] for a Riemann rule.
+ * 'left' → lo, 'right' → hi, 'mid'/'trapezoid' → midpoint (trapezoid is rendered
+ * centered; its value is computed from both endpoints by the caller).
+ */
+export function ruleSamplePoint(lo, hi, rule) {
+  if (rule === 'left') return lo
+  if (rule === 'right') return hi
+  return (lo + hi) / 2
+}

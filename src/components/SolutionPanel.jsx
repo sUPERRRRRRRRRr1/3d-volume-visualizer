@@ -1,7 +1,7 @@
 import katex from 'katex'
 import { useAppStore } from '../store/useAppStore'
 import { fmt, fmtSnap } from '../lib/format'
-import { COLORS } from '../lib/colors'
+import { COLORS, HIGHLIGHT } from '../lib/colors'
 import { NumberField } from './ui/controls'
 
 // Intersection list with an optional manual-edit mode, in case the numerical
@@ -114,9 +114,15 @@ function Step({ index, label, latex }) {
   )
 }
 
-function Stat({ label, value, unit, hint, accent }) {
+function Stat({ label, value, unit, hint, accent, onMouseEnter, onMouseLeave }) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-900/50 p-3">
+    <div
+      className={`rounded-lg border border-slate-700 bg-slate-900/50 p-3 ${
+        onMouseEnter ? 'cursor-help transition hover:border-sky-500/60' : ''
+      }`}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       <div className="text-xs text-slate-400">{label}</div>
       <div
         className="mt-0.5 text-2xl font-semibold"
@@ -137,8 +143,17 @@ export function SolutionPanel({ model, sliceData }) {
   const method = useAppStore((s) => s.method)
   const mode = useAppStore((s) => s.mode)
   const crossSection = useAppStore((s) => s.crossSection)
+  const showArcSurface = useAppStore((s) => s.showArcSurface)
+  const riemannRule = useAppStore((s) => s.riemannRule)
+  const setHoveredResult = useAppStore((s) => s.setHoveredResult)
   const { valid, error, area, useSecondCurve, volume, solution } = model
   const isCross = mode === 'crossSection'
+
+  // Hover a result card → highlight the matching part of the 3D solid.
+  const hov = (key) => ({
+    onMouseEnter: () => setHoveredResult(key),
+    onMouseLeave: () => setHoveredResult(null),
+  })
 
   const riemann = sliceData ? sliceData.riemann : null
   const errAbs = volume != null && riemann != null ? Math.abs(riemann - volume) : null
@@ -148,6 +163,36 @@ export function SolutionPanel({ model, sliceData }) {
   const approxLabel = isCross
     ? `ค่าประมาณ (ภาคตัดขวาง, n = ${n})`
     : `ค่าประมาณแบบ ${method === 'shell' ? 'เปลือก' : 'แผ่นจาน'} (n = ${n})`
+
+  // Arc length & surface area (single-curve revolution) — formula LaTeX.
+  const k = model.axisOffset ?? 0
+  const arcFTex = model.f && model.f.ok ? model.f.node.toTex() : 'f(x)'
+  const aT = fmt(model.lo, 2)
+  const bT = fmt(model.hi, 2)
+  const kOffTex = k === 0 ? '' : k > 0 ? ` - ${fmt(k, 2)}` : ` + ${fmt(-k, 2)}`
+  const surfDistTex =
+    model.axis === 'x' ? `\\left|${arcFTex}${kOffTex}\\right|` : `\\left|x${kOffTex}\\right|`
+  const showArc = showArcSurface && !isCross && model.arcLength != null
+
+  // Per-term Riemann breakdown: first 3 terms + … + last (collapsed by default).
+  const ruleLabels = { left: 'ซ้าย', mid: 'กลาง', right: 'ขวา', trapezoid: 'คางหมู' }
+  const slabs = sliceData ? sliceData.slices : []
+  const termEntries =
+    slabs.length <= 4
+      ? slabs.map((s, i) => ({ i, s }))
+      : [
+          ...slabs.slice(0, 3).map((s, i) => ({ i, s })),
+          null,
+          { i: slabs.length - 1, s: slabs[slabs.length - 1] },
+        ]
+  const estimateHint =
+    volume != null && riemann != null
+      ? riemann < volume - 1e-9
+        ? 'ผลรวมนี้ประมาณค่า “ต่ำกว่า” ปริมาตรจริง'
+        : riemann > volume + 1e-9
+          ? 'ผลรวมนี้ประมาณค่า “สูงกว่า” ปริมาตรจริง'
+          : 'ผลรวมนี้ใกล้เคียงปริมาตรจริงมาก'
+      : ''
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4">
@@ -161,9 +206,10 @@ export function SolutionPanel({ model, sliceData }) {
 
       {valid && (
         <>
-          {model.crossesAxis && model.axis === 'x' && (
+          {model.crossesAxis && (
             <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-200">
-              ⚠ เส้นโค้งข้ามแกนหมุนในช่วงนี้ ของแข็งอาจซ้อนทับกัน — ระบบคิดปริมาตรจากค่าสัมบูรณ์ของรัศมี
+              ⚠ {model.axis === 'x' ? 'บริเวณคร่อมเส้นแกนหมุน' : 'ช่วง [a, b] คร่อมเส้นแกนหมุน'}ในช่วงนี้
+              ของแข็งอาจซ้อนทับกัน — ระบบคิดปริมาตรจากค่าสัมบูรณ์ของรัศมี
             </div>
           )}
 
@@ -171,8 +217,9 @@ export function SolutionPanel({ model, sliceData }) {
             label="ปริมาตรของแข็ง (ค่าจริง)"
             value={fmt(volume, 4)}
             unit="ลบ.หน่วย"
-            accent={COLORS.areaStroke}
+            accent={HIGHLIGHT.volume}
             hint={piMultiple != null ? `≈ ${fmt(piMultiple, 4)}·π` : undefined}
+            {...hov('volume')}
           />
 
           {/* Riemann approximation + convergence */}
@@ -198,6 +245,37 @@ export function SolutionPanel({ model, sliceData }) {
             </div>
           </div>
 
+          {/* Per-term Riemann sum breakdown */}
+          {slabs.length > 0 && (
+            <details className="rounded-lg border border-slate-700 bg-slate-900/40 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-300">
+                ผลรวมรีมันน์ทีละพจน์ (กฎ{ruleLabels[riemannRule] ?? 'กลาง'})
+              </summary>
+              <div className="mt-2 space-y-1 text-xs">
+                <div className="mb-1 font-mono text-slate-500">
+                  V ≈ ΔV₁ + ΔV₂ + … + ΔV<sub>n</sub>
+                </div>
+                {termEntries.map((e, idx) =>
+                  e == null ? (
+                    <div key={`gap${idx}`} className="text-center text-slate-600">
+                      ⋮
+                    </div>
+                  ) : (
+                    <div key={e.i} className="flex justify-between font-mono">
+                      <span className="text-slate-500">ΔV<sub>{e.i + 1}</sub></span>
+                      <span className="text-slate-200">{fmt(e.s.vol, 5)}</span>
+                    </div>
+                  ),
+                )}
+                <div className="flex justify-between border-t border-slate-700 pt-1 font-mono">
+                  <span className="text-slate-400">ผลรวม (n = {n})</span>
+                  <span className="text-sky-300">{fmt(riemann, 4)}</span>
+                </div>
+                {estimateHint && <p className="pt-0.5 text-slate-500">{estimateHint}</p>}
+              </div>
+            </details>
+          )}
+
           {/* Step-by-step solution (KaTeX) */}
           {solution && (
             <section>
@@ -222,7 +300,46 @@ export function SolutionPanel({ model, sliceData }) {
             label={useSecondCurve ? 'พื้นที่ระหว่างเส้นโค้ง' : 'พื้นที่ใต้กราฟ (ภาคตัดขวาง 2 มิติ)'}
             value={fmt(area, 4)}
             unit="ตร.หน่วย"
+            accent={HIGHLIGHT.area}
+            {...hov('area')}
           />
+
+          {showArc && (
+            <section className="space-y-2">
+              <h3 className="text-sm font-semibold text-slate-300">
+                ความยาวส่วนโค้ง &amp; พื้นที่ผิวของการหมุน
+              </h3>
+              <div className="grid grid-cols-2 gap-2">
+                <Stat
+                  label="ความยาวส่วนโค้ง L"
+                  value={fmt(model.arcLength, 4)}
+                  unit="หน่วย"
+                  accent={HIGHLIGHT.arc}
+                  {...hov('arc')}
+                />
+                <Stat
+                  label={`พื้นที่ผิว S (รอบ ${model.axis === 'x' ? 'y' : 'x'} = ${fmt(k, 2)})`}
+                  value={fmt(model.surfaceArea, 4)}
+                  unit="ตร.หน่วย"
+                  accent={HIGHLIGHT.surface}
+                  {...hov('surface')}
+                />
+              </div>
+              <ol className="space-y-2">
+                <Step
+                  index={1}
+                  label="ความยาวส่วนโค้ง"
+                  latex={`L = \\int_{${aT}}^{${bT}} \\sqrt{1 + \\left(f'(x)\\right)^2}\\, dx \\approx ${fmt(model.arcLength, 4)}`}
+                />
+                <Step
+                  index={2}
+                  label="พื้นที่ผิวของการหมุน"
+                  latex={`S = 2\\pi \\int_{${aT}}^{${bT}} ${surfDistTex}\\,\\sqrt{1 + \\left(f'(x)\\right)^2}\\, dx \\approx ${fmt(model.surfaceArea, 4)}`}
+                />
+              </ol>
+              <p className="text-xs text-amber-300/80">คำนวณเชิงตัวเลข (กฎซิมป์สัน)</p>
+            </section>
+          )}
 
           {useSecondCurve && <IntersectionEditor model={model} />}
         </>

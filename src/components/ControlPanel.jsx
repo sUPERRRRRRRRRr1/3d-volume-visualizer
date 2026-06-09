@@ -11,7 +11,7 @@ function ExamplePicker() {
   const Chip = ({ ex, tint }) => (
     <button
       type="button"
-      onClick={() => useAppStore.setState({ ...ex.state, manualIntersections: null })}
+      onClick={() => useAppStore.setState({ axisOffset: 0, ...ex.state, manualIntersections: null })}
       className={`rounded-full border px-2.5 py-1 text-xs transition ${tint}`}
     >
       {ex.label}
@@ -47,6 +47,8 @@ function ExamplePicker() {
 // the active method's formula.
 function HighlightReadout({ model, method, mode, crossSection, x }) {
   const fv = model.f && model.f.ok ? model.f.evaluate(x) : NaN
+  const k = model.axisOffset ?? 0
+  const kTex = k !== 0 ? ` − ${fmt(k, 2)}` : ''
   const Row = ({ label, value, color }) => (
     <div className="flex justify-between">
       <span className="text-slate-500">{label}</span>
@@ -71,21 +73,21 @@ function HighlightReadout({ model, method, mode, crossSection, x }) {
     )
   }
   if (method === 'disk') {
-    const r = Math.abs(fv)
+    const r = Math.abs(fv - k)
     return (
       <div className="mt-1.5 space-y-0.5 text-xs">
         <Row label="ตำแหน่ง x" value={fmt(x, 3)} />
-        <Row label="รัศมี  r = |f(x)|" value={fmt(r, 3)} color="#38bdf8" />
+        <Row label={`รัศมี  r = |f(x)${kTex}|`} value={fmt(r, 3)} color="#38bdf8" />
         <Row label="พื้นที่หน้าตัด  πr²" value={fmt(Math.PI * r * r, 3)} color="#34d399" />
       </div>
     )
   }
-  const rho = Math.abs(x)
+  const rho = Math.abs(x - k)
   const h = Math.abs(fv)
   return (
     <div className="mt-1.5 space-y-0.5 text-xs">
       <Row label="ตำแหน่ง x" value={fmt(x, 3)} />
-      <Row label="รัศมีเปลือก  |x|" value={fmt(rho, 3)} color="#f472b6" />
+      <Row label={`รัศมีเปลือก  |x${kTex}|`} value={fmt(rho, 3)} color="#f472b6" />
       <Row label="สูง  h = |f(x)|" value={fmt(h, 3)} color="#38bdf8" />
       <Row label="พื้นที่ผิว  2πrh" value={fmt(2 * Math.PI * rho * h, 3)} color="#34d399" />
     </div>
@@ -103,11 +105,15 @@ export function ControlPanel({ model }) {
   const method = useAppStore((s) => s.method)
   const mode = useAppStore((s) => s.mode)
   const crossSection = useAppStore((s) => s.crossSection)
+  const axisOffset = useAppStore((s) => s.axisOffset)
   const n = useAppStore((s) => s.n)
+  const riemannRule = useAppStore((s) => s.riemannRule)
   const viewMode = useAppStore((s) => s.viewMode)
+  const solidView = useAppStore((s) => s.solidView)
   const highlightEnabled = useAppStore((s) => s.highlightEnabled)
   const highlightX = useAppStore((s) => s.highlightX)
   const isAnimating = useAppStore((s) => s.isAnimating)
+  const showArcSurface = useAppStore((s) => s.showArcSurface)
 
   const setF = useAppStore((s) => s.setF)
   const setG = useAppStore((s) => s.setG)
@@ -116,12 +122,16 @@ export function ControlPanel({ model }) {
   const setB = useAppStore((s) => s.setB)
   const setAxis = useAppStore((s) => s.setAxis)
   const setMethod = useAppStore((s) => s.setMethod)
+  const setAxisOffset = useAppStore((s) => s.setAxisOffset)
   const setMode = useAppStore((s) => s.setMode)
   const setCrossSection = useAppStore((s) => s.setCrossSection)
   const setN = useAppStore((s) => s.setN)
+  const setRiemannRule = useAppStore((s) => s.setRiemannRule)
   const setViewMode = useAppStore((s) => s.setViewMode)
+  const setSolidView = useAppStore((s) => s.setSolidView)
   const setHighlightEnabled = useAppStore((s) => s.setHighlightEnabled)
   const setHighlightX = useAppStore((s) => s.setHighlightX)
+  const setShowArcSurface = useAppStore((s) => s.setShowArcSurface)
   const setAnimating = useAppStore((s) => s.setAnimating)
   const setSweepDeg = useAppStore((s) => s.setSweepDeg)
 
@@ -233,6 +243,31 @@ export function ControlPanel({ model }) {
               />
             </Field>
           </section>
+
+          <section>
+            <Field
+              label={`เส้นแกนหมุน  ${axis === 'x' ? 'y =' : 'x ='}`}
+              hint="0 = แกนพิกัด"
+            >
+              <NumberField value={axisOffset} onChange={setAxisOffset} step={0.5} />
+              <p className="mt-1 text-xs text-slate-500">
+                หมุนรอบเส้น {axis === 'x' ? `y = ${axisOffset}` : `x = ${axisOffset}`} (ใส่ค่าอื่นเพื่อหมุนรอบเส้นที่ไม่ใช่แกน)
+              </p>
+            </Field>
+          </section>
+
+          {!useSecondCurve && (
+            <section className="rounded-lg border border-slate-700 bg-slate-900/40 p-3">
+              <Toggle
+                checked={showArcSurface}
+                onChange={setShowArcSurface}
+                label="ความยาวส่วนโค้ง & พื้นที่ผิว"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                L = ∫√(1+f′²)dx · S = 2π∫ r·√(1+f′²) dx (เส้นเดียว)
+              </p>
+            </section>
+          )}
         </>
       )}
 
@@ -280,6 +315,26 @@ export function ControlPanel({ model }) {
         </Field>
       </section>
 
+      {/* 3D display mode (revolution only) */}
+      {viewMode === '3d' && mode === 'revolution' && (
+        <section>
+          <Field label="การแสดงผล 3 มิติ">
+            <Segmented
+              value={solidView}
+              onChange={setSolidView}
+              options={[
+                { value: 'solid', label: 'ของแข็งเรียบ' },
+                { value: 'both', label: 'ของแข็ง + แผ่น' },
+                { value: 'slices', label: 'เฉพาะแผ่น' },
+              ]}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              “ของแข็งเรียบ” ซ่อนแผ่นประมาณ เห็นรูปทรงชัด
+            </p>
+          </Field>
+        </section>
+      )}
+
       {/* Slice count n */}
       <section>
         <Field label="จำนวนแผ่น (n)" hint={`${n} แผ่น`}>
@@ -287,6 +342,22 @@ export function ControlPanel({ model }) {
           <p className="mt-1 text-xs text-slate-500">
             n น้อย = แผ่นหนา เห็นชัด (ค่าประมาณหยาบ) · n มาก = ค่าลู่เข้าค่าจริง
           </p>
+        </Field>
+      </section>
+
+      {/* Riemann sampling rule */}
+      <section>
+        <Field label="กฎผลรวมรีมันน์" hint="จุดสุ่มในแต่ละแผ่น">
+          <Segmented
+            value={riemannRule}
+            onChange={setRiemannRule}
+            options={[
+              { value: 'left', label: 'ซ้าย' },
+              { value: 'mid', label: 'กลาง' },
+              { value: 'right', label: 'ขวา' },
+              { value: 'trapezoid', label: 'คางหมู' },
+            ]}
+          />
         </Field>
       </section>
 

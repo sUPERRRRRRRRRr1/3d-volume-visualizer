@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { COLORS } from '../lib/colors'
 import { niceTicks } from '../lib/format'
-import { clamp } from '../lib/numeric'
+import { clamp, ruleSamplePoint } from '../lib/numeric'
 
 // Internal drawing surface (scaled to fit its container by the SVG viewBox).
 const W = 760
@@ -84,8 +84,10 @@ export function Plot2D({ model }) {
   const method = useAppStore((s) => s.method)
   const mode = useAppStore((s) => s.mode)
   const showSlices = useAppStore((s) => s.showSlices)
+  const riemannRule = useAppStore((s) => s.riemannRule)
 
   const { plotBounds, samples, lo, hi, axis, useSecondCurve, f, g } = model
+  const k = model.axisOffset ?? 0
   const { xMin, xMax, yMin, yMax } = plotBounds
 
   // World → pixel scales.
@@ -113,21 +115,30 @@ export function Plot2D({ model }) {
   const hX = highlightEnabled && highlightX != null ? clamp(highlightX, lo, hi) : null
   const hY = hX != null && f.ok ? f.evaluate(hX) : null
 
-  // Riemann rectangles (midpoint rule) over [lo, hi] — the 2D mirror of the 3D
-  // slices, so increasing n visibly fills the shaded region.
+  // Riemann slabs over [lo, hi] — the 2D mirror of the 3D slices, so increasing
+  // n visibly fills the shaded region. Each slab is a quad: flat-topped for the
+  // left/mid/right rules, slant-topped (a true trapezoid) for the trapezoid rule.
   const rectColor =
     mode === 'crossSection' ? '#a78bfa' : method === 'shell' ? COLORS.curveG : COLORS.curveF
-  const riemannRects = []
+  const bot = (x) => (useSecondCurve && g && g.ok ? g.evaluate(x) : 0)
+  const riemannQuads = []
   if (showSlices && f.ok && hi > lo) {
     const N = Math.max(1, Math.min(200, Math.round(n)))
     const dx = (hi - lo) / N
     for (let i = 0; i < N; i++) {
       const xL = lo + dx * i
-      const xM = xL + dx / 2
-      const yTop = f.evaluate(xM)
-      const yBot = useSecondCurve && g && g.ok ? g.evaluate(xM) : 0
-      if (Number.isFinite(yTop) && Number.isFinite(yBot)) {
-        riemannRects.push({ xL, xR: xL + dx, yTop, yBot })
+      const xR = xL + dx
+      let topL, topR, botL, botR
+      if (riemannRule === 'trapezoid') {
+        topL = f.evaluate(xL); topR = f.evaluate(xR)
+        botL = bot(xL); botR = bot(xR)
+      } else {
+        const xe = ruleSamplePoint(xL, xR, riemannRule)
+        topL = topR = f.evaluate(xe)
+        botL = botR = bot(xe)
+      }
+      if ([topL, topR, botL, botR].every(Number.isFinite)) {
+        riemannQuads.push({ xL, xR, topL, topR, botL, botR })
       }
     }
   }
@@ -156,19 +167,20 @@ export function Plot2D({ model }) {
       {/* shaded region */}
       <path d={areaPath} fill={COLORS.area} stroke={COLORS.areaStroke} strokeWidth={1} strokeOpacity={0.6} />
 
-      {/* Riemann rectangles (2D mirror of the slices) */}
-      {riemannRects.map((r, i) => {
-        const x0 = sx(r.xL)
-        const x1 = sx(r.xR)
-        const yA = sy(r.yTop)
-        const yB = sy(r.yBot)
+      {/* Riemann slabs (2D mirror of the slices) */}
+      {riemannQuads.map((q, i) => {
+        const pts = [
+          [sx(q.xL), sy(q.botL)],
+          [sx(q.xR), sy(q.botR)],
+          [sx(q.xR), sy(q.topR)],
+          [sx(q.xL), sy(q.topL)],
+        ]
+          .map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`)
+          .join(' ')
         return (
-          <rect
+          <polygon
             key={`rr${i}`}
-            x={Math.min(x0, x1)}
-            y={Math.min(yA, yB)}
-            width={Math.abs(x1 - x0)}
-            height={Math.abs(yB - yA)}
+            points={pts}
             fill={rectColor}
             fillOpacity={0.16}
             stroke={rectColor}
@@ -178,26 +190,20 @@ export function Plot2D({ model }) {
         )
       })}
 
-      {/* axes (emphasise the axis of revolution) */}
+      {/* coordinate axes */}
       {yMin <= 0 && yMax >= 0 && (
-        <line
-          x1={M.left}
-          y1={sy(0)}
-          x2={M.left + PW}
-          y2={sy(0)}
-          stroke={axis === 'x' ? COLORS.axisStrong : COLORS.axis}
-          strokeWidth={axis === 'x' ? 2.5 : 1.5}
-        />
+        <line x1={M.left} y1={sy(0)} x2={M.left + PW} y2={sy(0)} stroke={COLORS.axis} strokeWidth={1.5} />
       )}
       {xMin <= 0 && xMax >= 0 && (
-        <line
-          x1={sx(0)}
-          y1={M.top}
-          x2={sx(0)}
-          y2={M.top + PH}
-          stroke={axis === 'y' ? COLORS.axisStrong : COLORS.axis}
-          strokeWidth={axis === 'y' ? 2.5 : 1.5}
-        />
+        <line x1={sx(0)} y1={M.top} x2={sx(0)} y2={M.top + PH} stroke={COLORS.axis} strokeWidth={1.5} />
+      )}
+
+      {/* axis of revolution (amber, dashed): y = k for axis 'x', x = k for axis 'y' */}
+      {mode !== 'crossSection' && axis === 'x' && yMin <= k && k <= yMax && (
+        <line x1={M.left} y1={sy(k)} x2={M.left + PW} y2={sy(k)} stroke={COLORS.highlight} strokeWidth={2.5} strokeDasharray="8 4" />
+      )}
+      {mode !== 'crossSection' && axis === 'y' && xMin <= k && k <= xMax && (
+        <line x1={sx(k)} y1={M.top} x2={sx(k)} y2={M.top + PH} stroke={COLORS.highlight} strokeWidth={2.5} strokeDasharray="8 4" />
       )}
 
       {/* integration bound lines a, b */}

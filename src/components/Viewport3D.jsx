@@ -9,22 +9,21 @@ import {
   solidExtent,
   buildSlicesGeometry,
   highlightSliceIndex,
+  buildRegionMesh,
 } from '../lib/geometry'
 import {
   buildCrossSectionGeometry,
   highlightCrossSectionIndex,
   crossSectionExtent,
 } from '../lib/crossSection'
-import { COLORS3D } from '../lib/colors'
+import { COLORS3D, HIGHLIGHT } from '../lib/colors'
+import { niceTicks } from '../lib/format'
 
 // The revolved solid mesh. Geometry is regenerated only when the math model or
 // the sweep angle changes (NOT on every orbit/zoom frame).
-function RevolutionSolid({ model, sweep, visible, opacity }) {
-  const geo = useMemo(() => {
-    if (!model.valid) return null
-    return revolveSolid(buildCrossSectionPolygon(model), { angularSegments: 72, sweep })
-  }, [model, sweep])
-  useEffect(() => () => geo && geo.dispose(), [geo])
+// Smooth revolved solid. Geometry is built once in Viewport3D and passed in so
+// the result-highlight overlay can reuse the same mesh.
+function RevolutionSolid({ geo, visible, opacity, outline }) {
   if (!geo || !visible) return null
   return (
     <mesh geometry={geo}>
@@ -34,11 +33,68 @@ function RevolutionSolid({ model, sweep, visible, opacity }) {
         transparent
         opacity={opacity}
         depthWrite={opacity > 0.4}
-        metalness={0.1}
-        roughness={0.4}
+        metalness={0.15}
+        roughness={0.35}
       />
+      {/* crisp silhouette of the smooth solid (rims/seams only — the lateral
+          surface is near-smooth so few edges show) */}
+      {outline && <Edges threshold={30} color="#1e3a8a" />}
     </mesh>
   )
+}
+
+// Flat highlight of the 2D area region (the cross-section that gets revolved),
+// drawn in the world xy-plane.
+function RegionHighlight({ model }) {
+  const geo = useMemo(() => buildRegionMesh(model), [model])
+  useEffect(() => () => geo && geo.dispose(), [geo])
+  if (!geo) return null
+  return (
+    <mesh geometry={geo}>
+      <meshBasicMaterial color={HIGHLIGHT.area} side={THREE.DoubleSide} transparent opacity={0.6} depthWrite={false} />
+    </mesh>
+  )
+}
+
+// Highlights the geometric "part" a hovered result card refers to.
+//   volume  → the whole solid, glowing and filled
+//   surface → the solid's outer skin as a bright wireframe
+//   area    → the flat generating region (RegionHighlight)
+//   arc     → the generating curve f(x) as a thick line
+function ResultHighlight({ model, geo, hovered }) {
+  const arcPts = useMemo(() => {
+    if (hovered !== 'arc') return null
+    const pts = []
+    for (const p of model.samples.f) if (Number.isFinite(p.y)) pts.push([p.x, p.y, 0])
+    return pts.length >= 2 ? pts : null
+  }, [model, hovered])
+
+  if (hovered === 'volume' && geo) {
+    return (
+      <mesh geometry={geo}>
+        <meshStandardMaterial
+          color={HIGHLIGHT.volume}
+          emissive={HIGHLIGHT.volume}
+          emissiveIntensity={0.6}
+          side={THREE.DoubleSide}
+          transparent
+          opacity={0.62}
+          depthWrite={false}
+          roughness={0.4}
+        />
+      </mesh>
+    )
+  }
+  if (hovered === 'surface' && geo) {
+    return (
+      <mesh geometry={geo}>
+        <meshBasicMaterial color={HIGHLIGHT.surface} wireframe transparent opacity={0.9} />
+      </mesh>
+    )
+  }
+  if (hovered === 'area') return <RegionHighlight model={model} />
+  if (hovered === 'arc' && arcPts) return <Line points={arcPts} color={HIGHLIGHT.arc} lineWidth={5} />
+  return null
 }
 
 // Disk/washer or shell slices. The slice nearest the highlight is drawn in amber.
@@ -53,8 +109,8 @@ function Slices({ model, sliceData }) {
     [model, sliceData, method, highlightX, highlightEnabled],
   )
   const { geometry, highlight } = useMemo(
-    () => buildSlicesGeometry(sliceData.slices, model.axis, hlIndex),
-    [sliceData, model.axis, hlIndex],
+    () => buildSlicesGeometry(sliceData.slices, model.axis, model.axisOffset ?? 0, hlIndex),
+    [sliceData, model.axis, model.axisOffset, hlIndex],
   )
   useEffect(
     () => () => {
@@ -81,8 +137,9 @@ function Slices({ model, sliceData }) {
   )
 }
 
-// Known-cross-section slabs (prisms standing on the base region).
-function CrossSectionPrisms({ model, sliceData }) {
+// Known-cross-section slabs (prisms standing on the base region). `glow` lights
+// the prisms when the volume card is hovered; `dim` fades them for other hovers.
+function CrossSectionPrisms({ model, sliceData, glow, dim }) {
   const showSlices = useAppStore((s) => s.showSlices)
   const highlightEnabled = useAppStore((s) => s.highlightEnabled)
   const highlightX = useAppStore((s) => s.highlightX)
@@ -107,7 +164,17 @@ function CrossSectionPrisms({ model, sliceData }) {
     <group>
       {geometry && (
         <mesh geometry={geometry}>
-          <meshStandardMaterial color={COLORS3D.crossSection} side={THREE.DoubleSide} transparent opacity={0.85} metalness={0.1} roughness={0.5} flatShading />
+          <meshStandardMaterial
+            color={glow ? HIGHLIGHT.volume : COLORS3D.crossSection}
+            side={THREE.DoubleSide}
+            transparent
+            opacity={dim ? 0.12 : 0.85}
+            metalness={0.1}
+            roughness={0.5}
+            emissive={glow ? HIGHLIGHT.volume : '#000000'}
+            emissiveIntensity={glow ? 0.6 : 0}
+            flatShading
+          />
           {/* outline each slab so the stacked 3D structure reads clearly */}
           <Edges threshold={18} color="#4c1d95" />
         </mesh>
@@ -121,16 +188,59 @@ function CrossSectionPrisms({ model, sliceData }) {
   )
 }
 
-// Coordinate axes; the axis of revolution (if any) is thicker and amber.
-function Axes({ size, axis }) {
-  const L = size
-  const isX = axis === 'x'
-  const isY = axis === 'y'
+const tickText = (v) => Number(v.toFixed(2)).toString()
+
+// Numbered length scale along one world axis ('x' | 'y' | 'z'): a short
+// perpendicular mark + a numeric label at each "nice" tick over [-L, L]. Ticks
+// at 0 and near the far end (where the axis letter sits) are skipped.
+function AxisTicks({ L, dir }) {
+  const ticks = niceTicks(-L, L, 6).filter((t) => Math.abs(t) > 1e-6 && Math.abs(t) < L * 0.92)
+  const d = 0.02 * L // tick mark half-length
+  const fs = 0.07 * L // label size
+  const lab = 0.06 * L // label offset off the axis
+  const color = dir === 'x' ? COLORS3D.axisX : dir === 'y' ? COLORS3D.axisY : COLORS3D.axisZ
+  // perpendicular mark endpoints + label offset for a tick value t on this axis
+  const place = (t) => {
+    if (dir === 'x') return { a: [t, -d, 0], b: [t, d, 0], lp: [t, -lab, 0] }
+    if (dir === 'y') return { a: [-d, t, 0], b: [d, t, 0], lp: [-lab, t, 0] }
+    return { a: [0, -d, t], b: [0, d, t], lp: [0, -lab, t] } // z
+  }
   return (
     <group>
-      <Line points={[[-L, 0, 0], [L, 0, 0]]} color={isX ? COLORS3D.revolveAxis : COLORS3D.axisX} lineWidth={isX ? 3.5 : 1.5} />
-      <Line points={[[0, -L, 0], [0, L, 0]]} color={isY ? COLORS3D.revolveAxis : COLORS3D.axisY} lineWidth={isY ? 3.5 : 1.5} />
+      {ticks.map((t) => {
+        const { a, b, lp } = place(t)
+        return (
+          <group key={`${dir}${t}`}>
+            <Line points={[a, b]} color={color} lineWidth={1} />
+            <Text position={lp} fontSize={fs} color="#94a3b8" anchorX="center" anchorY="middle">
+              {tickText(t)}
+            </Text>
+          </group>
+        )
+      })}
+    </group>
+  )
+}
+
+// Coordinate axes (always through the origin) plus the axis of revolution,
+// emphasised in amber and offset to the line y = k (axis 'x') / x = k (axis 'y').
+// X, Y and Z each carry a numbered length scale.
+function Axes({ size, axis, offset = 0 }) {
+  const L = size
+  return (
+    <group>
+      <Line points={[[-L, 0, 0], [L, 0, 0]]} color={COLORS3D.axisX} lineWidth={1.5} />
+      <Line points={[[0, -L, 0], [0, L, 0]]} color={COLORS3D.axisY} lineWidth={1.5} />
       <Line points={[[0, 0, -L], [0, 0, L]]} color={COLORS3D.axisZ} lineWidth={1.5} />
+      <AxisTicks L={L} dir="x" />
+      <AxisTicks L={L} dir="y" />
+      <AxisTicks L={L} dir="z" />
+      {axis === 'x' && (
+        <Line points={[[-L, offset, 0], [L, offset, 0]]} color={COLORS3D.revolveAxis} lineWidth={3.5} />
+      )}
+      {axis === 'y' && (
+        <Line points={[[offset, -L, 0], [offset, L, 0]]} color={COLORS3D.revolveAxis} lineWidth={3.5} />
+      )}
       <Text position={[L + 0.08 * L, 0, 0]} fontSize={0.14 * L} color={COLORS3D.axisX}>X</Text>
       <Text position={[0, L + 0.08 * L, 0]} fontSize={0.14 * L} color={COLORS3D.axisY}>Y</Text>
       <Text position={[0, 0, L + 0.08 * L]} fontSize={0.14 * L} color={COLORS3D.axisZ}>Z</Text>
@@ -179,14 +289,29 @@ function AnimationDriver() {
 
 export function Viewport3D({ model, sliceData, children }) {
   const sweepDeg = useAppStore((s) => s.sweepDeg)
-  const showSolid = useAppStore((s) => s.showSolid)
-  const showSlices = useAppStore((s) => s.showSlices)
+  const solidView = useAppStore((s) => s.solidView)
   const isAnimating = useAppStore((s) => s.isAnimating)
+  const hoveredResult = useAppStore((s) => s.hoveredResult)
   const sweep = (Math.max(0, Math.min(360, sweepDeg)) * Math.PI) / 180
   const controlsRef = useRef(null)
   const isCross = model.mode === 'crossSection'
+  const dimmed = hoveredResult != null && !isAnimating
 
-  const solidOpacity = isAnimating ? 0.7 : showSlices ? 0.12 : 0.5
+  // Smooth-solid-only reads as an opaque object; alongside slices it's a faint
+  // ghost of the target shape behind the slabs. When a result card is hovered,
+  // the base solid drops to a faint ghost so the highlight overlay stands out.
+  const solidOpacity = dimmed ? 0.06 : isAnimating ? 0.72 : solidView === 'solid' ? 0.92 : 0.18
+
+  // Revolved solid geometry — built once and shared by the solid and the
+  // volume/surface highlight overlay.
+  const revoGeo = useMemo(
+    () =>
+      isCross || !model.valid
+        ? null
+        : revolveSolid(buildCrossSectionPolygon(model), { angularSegments: 72, sweep }),
+    [model, sweep, isCross],
+  )
+  useEffect(() => () => revoGeo && revoGeo.dispose(), [revoGeo])
 
   // Unified camera frame + axes/grid sizing, computed per mode.
   const scene = useMemo(() => {
@@ -208,19 +333,21 @@ export function Viewport3D({ model, sliceData, children }) {
       }
     }
     const ext = solidExtent(model)
+    const k = model.axisOffset ?? 0
     const mid = (ext.axialMin + ext.axialMax) / 2
     const axialHalf = (ext.axialMax - ext.axialMin) / 2
     const R = ext.maxRadius
     const radius = Math.sqrt(axialHalf * axialHalf + R * R) || 1
-    const axesSize = Math.max(R, Math.abs(ext.axialMax), Math.abs(ext.axialMin), 1) * 1.4
+    const axesSize = Math.max(R + Math.abs(k), Math.abs(ext.axialMax), Math.abs(ext.axialMin), 1) * 1.4
     return {
       frame: {
-        center: model.axis === 'x' ? [mid, 0, 0] : [0, mid, 0],
+        // The solid is centered on the line of revolution (y = k or x = k).
+        center: model.axis === 'x' ? [mid, k, 0] : [k, mid, 0],
         radius,
         view: model.axis === 'x' ? [0.45, 0.6, 0.95] : [0.95, 0.55, 0.95],
       },
       axesSize,
-      gridY: model.axis === 'y' ? ext.axialMin : -R * 1.05,
+      gridY: model.axis === 'y' ? ext.axialMin : k - R * 1.05,
       gridSize: Math.max(R, Math.abs(ext.axialMax - ext.axialMin)) * 4 + 2,
     }
   }, [model])
@@ -241,9 +368,9 @@ export function Viewport3D({ model, sliceData, children }) {
     <div className="relative h-full w-full overflow-hidden rounded-lg bg-slate-900">
       <Canvas camera={{ position: [6, 5, 9], fov: 45 }} dpr={[1, 2]}>
         <color attach="background" args={['#0b1120']} />
-        <ambientLight intensity={0.75} />
-        <directionalLight position={[8, 12, 6]} intensity={1.1} />
-        <directionalLight position={[-6, -4, -8]} intensity={0.35} />
+        <ambientLight intensity={0.6} />
+        <directionalLight position={[8, 12, 6]} intensity={1.25} />
+        <directionalLight position={[-6, -4, -8]} intensity={0.45} />
 
         <Grid
           position={[0, scene.gridY, 0]}
@@ -254,14 +381,32 @@ export function Viewport3D({ model, sliceData, children }) {
           infiniteGrid={false}
         />
 
-        <Axes size={scene.axesSize} axis={isCross ? 'none' : model.axis} />
+        <Axes size={scene.axesSize} axis={isCross ? 'none' : model.axis} offset={model.axisOffset ?? 0} />
 
         {isCross ? (
-          sliceData && <CrossSectionPrisms model={model} sliceData={sliceData} />
+          <>
+            {sliceData && (
+              <CrossSectionPrisms
+                model={model}
+                sliceData={sliceData}
+                glow={hoveredResult === 'volume'}
+                dim={dimmed && hoveredResult !== 'volume'}
+              />
+            )}
+            {hoveredResult === 'area' && <RegionHighlight model={model} />}
+          </>
         ) : (
           <>
-            <RevolutionSolid model={model} sweep={sweep} visible={showSolid} opacity={solidOpacity} />
-            {sliceData && !isAnimating && <Slices model={model} sliceData={sliceData} />}
+            <RevolutionSolid
+              geo={revoGeo}
+              visible={solidView !== 'slices'}
+              opacity={solidOpacity}
+              outline={!dimmed && !isAnimating && solidView === 'solid'}
+            />
+            {sliceData && !isAnimating && !dimmed && solidView !== 'solid' && (
+              <Slices model={model} sliceData={sliceData} />
+            )}
+            {!isAnimating && <ResultHighlight model={model} geo={revoGeo} hovered={hoveredResult} />}
           </>
         )}
         {children}

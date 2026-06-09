@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { CROSS_SECTIONS } from './crossSectionShapes'
+import { ruleSamplePoint } from './numeric'
 
 // Volume by KNOWN CROSS-SECTIONS.
 //
@@ -87,20 +88,28 @@ function buildPrism(profile, x0, x1) {
  * Build the cross-section slabs (the Riemann approximation that IS the solid).
  * @returns {{ slices: Array, riemann: number, shape: string, mode: 'crossSection' }}
  */
-export function buildCrossSectionSlices(model, n, shape) {
+export function buildCrossSectionSlices(model, n, shape, rule = 'mid') {
   if (!model.valid) return { slices: [], riemann: 0, shape, mode: 'crossSection' }
   const { lo, hi } = model
   const factor = CROSS_SECTIONS[shape]?.factor ?? 1
   const N = Math.max(1, Math.min(200, Math.round(n)))
   const dx = (hi - lo) / N
+  const A = (x) => {
+    const [a, b] = baseAt(model, x)
+    const s = b - a
+    return factor * s * s
+  }
   const slices = []
   for (let i = 0; i < N; i++) {
-    const xc = lo + dx * (i + 0.5)
-    const [yLo, yHi] = baseAt(model, xc)
+    const xL = lo + dx * i
+    const xR = xL + dx
+    const xe = ruleSamplePoint(xL, xR, rule)
+    const [yLo, yHi] = baseAt(model, xe)
     const s = yHi - yLo
+    const vol = rule === 'trapezoid' ? 0.5 * (A(xL) + A(xR)) * dx : factor * s * s * dx
     slices.push({
-      uLo: xc - dx / 2, uHi: xc + dx / 2, yLo, yHi, s,
-      centerAxial: xc, thickness: dx, vol: factor * s * s * dx,
+      uLo: xL, uHi: xR, yLo, yHi, s,
+      centerAxial: (xL + xR) / 2, thickness: dx, vol,
     })
   }
   return { slices, riemann: slices.reduce((a, b) => a + b.vol, 0), shape, mode: 'crossSection' }
