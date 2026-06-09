@@ -32,7 +32,6 @@ const pMul = (a, b) => {
   for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) o[i + j] = o[i + j].add(a[i].mul(b[j]))
   return o
 }
-const pShift = (a) => [F(0), ...a] // multiply by x
 const pIntegrate = (a) => {
   const o = [F(0)]
   for (let k = 0; k < a.length; k++) o[k + 1] = a[k].div(k + 1)
@@ -127,27 +126,44 @@ export function buildSolution(model) {
   }
 
   const isShell = axis === 'y' // we pair: about-Y → shell formula, about-X → disk
+  const k = model.axisOffset ?? 0
   const factorTex = isShell ? '2\\pi' : '\\pi'
+
+  // Distance-from-line expressions for the setup formula. Sign-aware so a
+  // negative k reads "+ |k|" rather than "- -k". With k = 0 these collapse to
+  // the original strings (no display regression).
+  const kAbs = num(Math.abs(k))
+  const off = (expr) => (k === 0 ? expr : k > 0 ? `${expr} - ${kAbs}` : `${expr} + ${kAbs}`)
+  const xOff = k === 0 ? 'x' : k > 0 ? `\\left(x - ${kAbs}\\right)` : `\\left(x + ${kAbs}\\right)`
+  const diskInner = !two && k !== 0 ? ` - \\left(${kAbs}\\right)^2` : '' // x-axis edge at |k|
   const formulaInner = isShell
     ? two
-      ? `x\\left(${fTex} - ${gTex}\\right)`
-      : `x\\left(${fTex}\\right)`
+      ? `${xOff}\\left(${fTex} - ${gTex}\\right)`
+      : `${xOff}\\left(${fTex}\\right)`
     : two
-      ? `\\left(${fTex}\\right)^2 - \\left(${gTex}\\right)^2`
-      : `\\left(${fTex}\\right)^2`
+      ? `\\left(${off(fTex)}\\right)^2 - \\left(${off(gTex)}\\right)^2`
+      : `\\left(${off(fTex)}\\right)^2${diskInner}`
   const setupLatex = `V = ${factorTex}\\int_{${aTex}}^{${bTex}} ${formulaInner}\\, dx`
+
+  // The closed-form washer/shell integrand only equals the true volume when the
+  // line of revolution stays OUTSIDE the region/domain; otherwise fall back to
+  // the numerical tier (the solid self-overlaps).
+  const lineCrossesDisk = !isShell && model.crossesAxis
+  const lineCrossesShell = isShell && k > lo + 1e-9 && k < hi - 1e-9
 
   // Try the exact polynomial route.
   const fc = polyCoeffs(f.node, f.evaluate)
   const gc = two ? polyCoeffs(g.node, g.evaluate) : [F(0)]
 
-  if (fc && gc) {
-    // Build the polynomial integrand (without the π / 2π factor).
+  if (fc && gc && !lineCrossesDisk && !lineCrossesShell) {
+    // Build the polynomial integrand (without the π / 2π factor). Both forms
+    // reduce to the originals when k = 0.
     let integrand
     if (isShell) {
-      integrand = pShift(two ? pSub(fc, gc) : fc) // x·(f−g)
+      integrand = pMul([F(-k), F(1)], pSub(fc, gc)) // (x − k)·(f − g)
     } else {
-      integrand = two ? pSub(pMul(fc, fc), pMul(gc, gc)) : pMul(fc, fc) // f²−g²
+      // (f − g)·(f + g − 2k)  ≡  (f − k)² − (g − k)²   [single curve: g = 0]
+      integrand = pMul(pSub(fc, gc), pSub(pAdd(fc, gc), [F(2 * k)]))
     }
 
     const anti = pIntegrate(integrand)

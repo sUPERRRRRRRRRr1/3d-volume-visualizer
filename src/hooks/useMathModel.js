@@ -3,8 +3,9 @@ import { useAppStore } from '../store/useAppStore'
 import { compileExpression } from '../lib/mathParser'
 import { simpson, linspace } from '../lib/numeric'
 import { findIntersections } from '../lib/intersection'
-import { computeVolume } from '../lib/volumeCalculator'
+import { computeVolume, regionAt } from '../lib/volumeCalculator'
 import { buildSolution } from '../lib/symbolicIntegrator'
+import { arcLength, surfaceArea } from '../lib/differential'
 
 const PLOT_SAMPLES = 400
 
@@ -27,6 +28,7 @@ export function useMathModel() {
   const method = useAppStore((s) => s.method)
   const mode = useAppStore((s) => s.mode)
   const crossSection = useAppStore((s) => s.crossSection)
+  const axisOffset = useAppStore((s) => s.axisOffset)
   const manualIntersections = useAppStore((s) => s.manualIntersections)
 
   const f = useMemo(() => compileExpression(fInput), [fInput])
@@ -71,12 +73,24 @@ export function useMathModel() {
       })
     consider(fSamples)
     consider(gSamples)
+    // Keep the line of revolution (y = k for axis 'x') inside the visible range.
+    if (axis === 'x') {
+      yMin = Math.min(yMin, axisOffset)
+      yMax = Math.max(yMax, axisOffset)
+    }
     if (yMin === yMax) {
       yMin -= 1
       yMax += 1
     }
     const padY = (yMax - yMin) * 0.12
     const padX = (hi - lo) * 0.08 || 1
+    // For axis 'y' the line of revolution is x = k — widen x to include it.
+    let xMin = lo - padX
+    let xMax = hi + padX
+    if (axis === 'y') {
+      xMin = Math.min(xMin, axisOffset - padX * 0.5)
+      xMax = Math.max(xMax, axisOffset + padX * 0.5)
+    }
 
     // --- Intersections (only meaningful with two curves) ---
     let intersections = []
@@ -96,21 +110,23 @@ export function useMathModel() {
       area = simpson(integrand, lo, hi, 1000)
     }
 
-    // --- Does the curve cross the axis of revolution within [lo, hi]? ---
-    // (Relevant for X-axis revolution; we flag it so the UI can warn.)
-    // We track the sign of non-zero samples so an exact zero sample (e.g. x^3 at
-    // x = 0) doesn't hide a genuine sign change.
+    // --- Does revolving cause the solid to self-overlap within [lo, hi]? ---
+    // axis 'x': the base region straddles the line y = k (overlapping washers).
+    // axis 'y': the domain straddles x = k (shells sweep from both sides).
+    // Flagged so the UI can warn and the symbolic solver can fall back.
     let crossesAxis = false
-    if (fOk) {
-      let lastSign = 0
-      for (const { y } of fSamples) {
-        if (!Number.isFinite(y) || y === 0) continue
-        const sign = y > 0 ? 1 : -1
-        if (lastSign !== 0 && sign !== lastSign) {
-          crossesAxis = true
-          break
+    if (valid) {
+      if (axis === 'x') {
+        for (let i = 0; i <= 200; i++) {
+          const x = lo + ((hi - lo) * i) / 200
+          const [yLo, yHi] = regionAt({ f, g, useSecondCurve }, x)
+          if (axisOffset > yLo + 1e-9 && axisOffset < yHi - 1e-9) {
+            crossesAxis = true
+            break
+          }
         }
-        lastSign = sign
+      } else {
+        crossesAxis = axisOffset > lo + 1e-9 && axisOffset < hi - 1e-9
       }
     }
 
@@ -127,11 +143,12 @@ export function useMathModel() {
       method,
       mode,
       crossSection,
+      axisOffset,
       useSecondCurve,
       samples: { f: fSamples, g: gSamples },
       plotBounds: {
-        xMin: lo - padX,
-        xMax: hi + padX,
+        xMin,
+        xMax,
         yMin: yMin - padY,
         yMax: yMax + padY,
       },
@@ -142,7 +159,11 @@ export function useMathModel() {
     // True volume + step-by-step solution depend only on these same inputs.
     model.volume = computeVolume(model)
     model.solution = buildSolution(model)
+    // Arc length & surface area of revolution — single curve about the line only.
+    const singleRev = valid && mode === 'revolution' && !useSecondCurve
+    model.arcLength = singleRev ? arcLength(f, lo, hi) : null
+    model.surfaceArea = singleRev ? surfaceArea(f, lo, hi, axis, axisOffset) : null
     return model
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [f, g, a, b, axis, method, mode, crossSection, useSecondCurve, manualIntersections])
+  }, [f, g, a, b, axis, method, mode, crossSection, axisOffset, useSecondCurve, manualIntersections])
 }

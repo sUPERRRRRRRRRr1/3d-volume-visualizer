@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
+import { regionAt, washerRadii } from './volumeCalculator'
+import { ruleSamplePoint } from './numeric'
 
 // 3D mesh generation for solids of revolution.
 //
@@ -35,50 +37,46 @@ const safe = (res, x) => {
  * (u, v) and its first/last points are distinct (the revolve step closes it).
  */
 export function buildCrossSectionPolygon(model) {
-  const { f, g, lo, hi, axis, useSecondCurve } = model
+  const { lo, hi, axis } = model
+  const k = model.axisOffset ?? 0
   const N = PROFILE_SAMPLES
   const points = []
   const xAt = (i) => lo + ((hi - lo) * i) / N
 
   if (axis === 'x') {
-    // u = x, v = radius = |f| (and |g| for the inner wall of a washer).
-    const outer = (x) => {
-      const a = Math.abs(safe(f, x))
-      if (useSecondCurve && g && g.ok) return Math.max(a, Math.abs(safe(g, x)))
-      return a
+    // u = x, v = distance from the line y = k. Inner/outer radii come from the
+    // washer formed by revolving the base region [yLo, yHi] about y = k.
+    const radii = (x) => {
+      const [yLo, yHi] = regionAt(model, x)
+      return washerRadii(yLo, yHi, k)
     }
-    const inner = (x) =>
-      useSecondCurve && g && g.ok
-        ? Math.min(Math.abs(safe(f, x)), Math.abs(safe(g, x)))
-        : 0
     // Inner edge lo → hi (v = rInner), then outer edge hi → lo (v = rOuter).
-    for (let i = 0; i <= N; i++) points.push({ u: xAt(i), v: inner(xAt(i)) })
-    for (let i = N; i >= 0; i--) points.push({ u: xAt(i), v: outer(xAt(i)) })
+    for (let i = 0; i <= N; i++) points.push({ u: xAt(i), v: radii(xAt(i)).r })
+    for (let i = N; i >= 0; i--) points.push({ u: xAt(i), v: radii(xAt(i)).R })
   } else {
-    // axis 'y': u = height, v = radius = |x|. Region is the band between the
-    // lower and upper boundary in height for each radius x.
-    const radius = (x) => Math.abs(x)
-    const lower = (x) =>
-      useSecondCurve && g && g.ok
-        ? Math.min(safe(f, x), safe(g, x))
-        : Math.min(0, safe(f, x))
-    const upper = (x) =>
-      useSecondCurve && g && g.ok
-        ? Math.max(safe(f, x), safe(g, x))
-        : Math.max(0, safe(f, x))
-    // Lower edge lo → hi, then upper edge hi → lo.
-    for (let i = 0; i <= N; i++) points.push({ u: lower(xAt(i)), v: radius(xAt(i)) })
-    for (let i = N; i >= 0; i--) points.push({ u: upper(xAt(i)), v: radius(xAt(i)) })
+    // axis 'y': u = height, v = distance from the line x = k. Region is the band
+    // between the lower and upper boundary in height for each x.
+    const radius = (x) => Math.abs(x - k)
+    for (let i = 0; i <= N; i++) {
+      const x = xAt(i)
+      points.push({ u: regionAt(model, x)[0], v: radius(x) })
+    }
+    for (let i = N; i >= 0; i--) {
+      const x = xAt(i)
+      points.push({ u: regionAt(model, x)[1], v: radius(x) })
+    }
   }
 
-  return { points, axis }
+  return { points, axis, offset: k }
 }
 
 // Map an (u, v) profile point at angle θ to world coordinates for the given axis.
-function mapPoint(axis, u, v, ang) {
+// The revolution is centered on the line y = k (axis 'x') or x = k (axis 'y'),
+// so the radial coordinate is offset by k in the corresponding world axis.
+function mapPoint(axis, u, v, ang, k = 0) {
   const c = Math.cos(ang)
   const s = Math.sin(ang)
-  return axis === 'x' ? [u, v * c, v * s] : [v * c, u, v * s]
+  return axis === 'x' ? [u, k + v * c, v * s] : [k + v * c, u, v * s]
 }
 
 /**
@@ -88,6 +86,7 @@ function mapPoint(axis, u, v, ang) {
  */
 export function revolveSolid(polygon, opts = {}) {
   const { points, axis } = polygon
+  const offset = polygon.offset ?? 0
   const angularSegments = opts.angularSegments ?? 72
   const sweep = opts.sweep ?? Math.PI * 2
   const full = sweep >= Math.PI * 2 - 1e-6
@@ -99,8 +98,8 @@ export function revolveSolid(polygon, opts = {}) {
   // --- Lateral surface: grid of (angularSegments+1) rings × P polygon points ---
   for (let a = 0; a <= angularSegments; a++) {
     const ang = (sweep * a) / angularSegments
-    for (let k = 0; k < P; k++) {
-      const [x, y, z] = mapPoint(axis, points[k].u, points[k].v, ang)
+    for (let p = 0; p < P; p++) {
+      const [x, y, z] = mapPoint(axis, points[p].u, points[p].v, ang, offset)
       positions.push(x, y, z)
     }
   }
@@ -123,7 +122,7 @@ export function revolveSolid(polygon, opts = {}) {
     for (const ang of [0, sweep]) {
       const base = positions.length / 3
       for (const p of points) {
-        const [x, y, z] = mapPoint(axis, p.u, p.v, ang)
+        const [x, y, z] = mapPoint(axis, p.u, p.v, ang, offset)
         positions.push(x, y, z)
       }
       for (const t of tris) indices.push(base + t[0], base + t[1], base + t[2])
@@ -139,27 +138,65 @@ export function revolveSolid(polygon, opts = {}) {
 }
 
 /**
+ * Flat mesh of the 2D area region (between f and the baseline g / y = 0) lying
+ * in the world xy-plane at z = 0 — i.e. the cross-section that gets revolved.
+ * Built as a triangle strip across the precomputed samples so it is robust to
+ * the curves crossing. Returns a BufferGeometry, or null if nothing to draw.
+ */
+export function buildRegionMesh(model) {
+  const fS = (model.samples && model.samples.f) || []
+  const two = model.useSecondCurve && model.g && model.g.ok
+  const gS = two ? (model.samples && model.samples.g) || [] : null
+  const positions = []
+  const indices = []
+  let prev = null // vertex index of the previous column's bottom vertex
+  let count = 0
+  for (let i = 0; i < fS.length; i++) {
+    const top = fS[i].y
+    const bot = two ? (gS[i] ? gS[i].y : NaN) : 0
+    if (!Number.isFinite(top) || !Number.isFinite(bot)) {
+      prev = null
+      continue
+    }
+    const x = fS[i].x
+    const base = count
+    positions.push(x, bot, 0, x, top, 0) // bottom then top
+    count += 2
+    if (prev != null) {
+      indices.push(prev, prev + 1, base + 1, prev, base + 1, base) // two triangles
+    }
+    prev = base
+  }
+  if (positions.length === 0) return null
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  geo.setIndex(indices)
+  geo.computeVertexNormals()
+  return geo
+}
+
+/**
  * Approximate extent of the solid, used to frame the camera and size helpers.
  * Returns { axialMin, axialMax, maxRadius }.
  */
 export function solidExtent(model) {
-  const { f, g, lo, hi, axis, useSecondCurve } = model
+  const { lo, hi, axis } = model
+  const k = model.axisOffset ?? 0
   const N = 120
   let maxRadius = 0
   let axialMin = Infinity
   let axialMax = -Infinity
   for (let i = 0; i <= N; i++) {
     const x = lo + ((hi - lo) * i) / N
-    const fv = safe(f, x)
-    const gv = useSecondCurve && g && g.ok ? safe(g, x) : 0
+    const [yLo, yHi] = regionAt(model, x)
     if (axis === 'x') {
-      maxRadius = Math.max(maxRadius, Math.abs(fv), Math.abs(gv))
+      maxRadius = Math.max(maxRadius, washerRadii(yLo, yHi, k).R)
       axialMin = Math.min(axialMin, x)
       axialMax = Math.max(axialMax, x)
     } else {
-      maxRadius = Math.max(maxRadius, Math.abs(x))
-      axialMin = Math.min(axialMin, fv, gv, 0)
-      axialMax = Math.max(axialMax, fv, gv, 0)
+      maxRadius = Math.max(maxRadius, Math.abs(x - k))
+      axialMin = Math.min(axialMin, yLo, yHi)
+      axialMax = Math.max(axialMax, yLo, yHi)
     }
   }
   if (!Number.isFinite(axialMin)) {
@@ -181,27 +218,32 @@ export function solidExtent(model) {
 const SCAN = 240 // samples used when scanning the profile for cross-method extents
 
 // Profile accessors describing the solid's cross-section, branchful per axis.
+// Radii are distances from the line of revolution (y = k for 'x', x = k for 'y').
 function profileFns(model) {
-  const { f, g, lo, hi, axis, useSecondCurve } = model
-  const two = useSecondCurve && g && g.ok
-  const F = (x) => safe(f, x)
-  const G = (x) => (two ? safe(g, x) : 0)
+  const { lo, hi, axis } = model
+  const k = model.axisOffset ?? 0
   if (axis === 'x') {
     return {
       kind: 'x',
       lo,
       hi,
-      vOut: (x) => (two ? Math.max(Math.abs(F(x)), Math.abs(G(x))) : Math.abs(F(x))),
-      vIn: (x) => (two ? Math.min(Math.abs(F(x)), Math.abs(G(x))) : 0),
+      vOut: (x) => {
+        const [a, b] = regionAt(model, x)
+        return washerRadii(a, b, k).R
+      },
+      vIn: (x) => {
+        const [a, b] = regionAt(model, x)
+        return washerRadii(a, b, k).r
+      },
     }
   }
   return {
     kind: 'y',
     lo,
     hi,
-    radius: (x) => Math.abs(x),
-    lower: (x) => (two ? Math.min(F(x), G(x)) : Math.min(0, F(x))),
-    upper: (x) => (two ? Math.max(F(x), G(x)) : Math.max(0, F(x))),
+    radius: (x) => Math.abs(x - k),
+    lower: (x) => regionAt(model, x)[0],
+    upper: (x) => regionAt(model, x)[1],
   }
 }
 
@@ -263,12 +305,21 @@ function axialExtentAtRadius(prof, rho) {
   return { lo, hi, length: count * dx }
 }
 
+// Slab volume for a Riemann `rule` given the cross-sectional area A(p) and the
+// partition sub-interval [pLo, pHi] of width `delta`. 'left'/'mid'/'right'
+// evaluate A at one point; 'trapezoid' averages the two faces.
+function slabVolume(A, pLo, pHi, delta, rule) {
+  if (rule === 'trapezoid') return 0.5 * (A(pLo) + A(pHi)) * delta
+  return A(ruleSamplePoint(pLo, pHi, rule)) * delta
+}
+
 /**
  * Build the approximating slices for the current model.
+ * @param {string} rule 'left' | 'mid' | 'right' | 'trapezoid' (sample per slab)
  * @returns {{ slices: Array, riemann: number, method: string, axis: string }}
  * Each slice: { uLo, uHi, vIn, vOut, centerAxial, centerRadius, thickness, vol }
  */
-export function buildSlices(model, n, method) {
+export function buildSlices(model, n, method, rule = 'mid') {
   if (!model.valid) return { slices: [], riemann: 0, method, axis: model.axis }
   const { lo, hi, axis } = model
   const prof = profileFns(model)
@@ -277,52 +328,66 @@ export function buildSlices(model, n, method) {
 
   if (method === 'disk' && axis === 'x') {
     const dx = (hi - lo) / N
+    const A = (x) => Math.PI * (prof.vOut(x) ** 2 - prof.vIn(x) ** 2)
     for (let i = 0; i < N; i++) {
-      const xc = lo + dx * (i + 0.5)
-      const vOut = prof.vOut(xc)
-      const vIn = prof.vIn(xc)
+      const xL = lo + dx * i
+      const xR = xL + dx
+      const xe = ruleSamplePoint(xL, xR, rule)
+      const vOut = prof.vOut(xe)
+      const vIn = prof.vIn(xe)
       slices.push({
-        uLo: xc - dx / 2, uHi: xc + dx / 2, vIn, vOut,
-        centerAxial: xc, centerRadius: (vIn + vOut) / 2, thickness: dx,
-        vol: Math.PI * (vOut * vOut - vIn * vIn) * dx,
+        uLo: xL, uHi: xR, vIn, vOut,
+        centerAxial: (xL + xR) / 2, centerRadius: (vIn + vOut) / 2, thickness: dx,
+        vol: slabVolume(A, xL, xR, dx, rule),
       })
     }
   } else if (method === 'disk' && axis === 'y') {
     const { min, max } = heightRangeY(prof)
     const dy = (max - min) / N
+    const A = (y) => {
+      const [a, b] = radialExtentAtHeight(prof, y)
+      return Math.PI * (b * b - a * a)
+    }
     for (let i = 0; i < N; i++) {
-      const yc = min + dy * (i + 0.5)
-      const [vIn, vOut] = radialExtentAtHeight(prof, yc)
+      const yL = min + dy * i
+      const yR = yL + dy
+      const [vIn, vOut] = radialExtentAtHeight(prof, ruleSamplePoint(yL, yR, rule))
       slices.push({
-        uLo: yc - dy / 2, uHi: yc + dy / 2, vIn, vOut,
-        centerAxial: yc, centerRadius: (vIn + vOut) / 2, thickness: dy,
-        vol: Math.PI * (vOut * vOut - vIn * vIn) * dy,
+        uLo: yL, uHi: yR, vIn, vOut,
+        centerAxial: (yL + yR) / 2, centerRadius: (vIn + vOut) / 2, thickness: dy,
+        vol: slabVolume(A, yL, yR, dy, rule),
       })
     }
   } else if (method === 'shell' && axis === 'y') {
     const dx = (hi - lo) / N
+    const A = (x) => 2 * Math.PI * prof.radius(x) * Math.abs(prof.upper(x) - prof.lower(x))
     for (let i = 0; i < N; i++) {
-      const xc = lo + dx * (i + 0.5)
-      const rho = Math.abs(xc)
-      const uLo = prof.lower(xc)
-      const uHi = prof.upper(xc)
+      const xL = lo + dx * i
+      const xR = xL + dx
+      const xe = ruleSamplePoint(xL, xR, rule)
+      const rho = prof.radius(xe)
+      const uLo = prof.lower(xe)
+      const uHi = prof.upper(xe)
       slices.push({
         uLo, uHi, vIn: Math.max(0, rho - dx / 2), vOut: rho + dx / 2,
         centerAxial: (uLo + uHi) / 2, centerRadius: rho, thickness: dx,
-        vol: 2 * Math.PI * rho * Math.abs(uHi - uLo) * dx,
+        vol: slabVolume(A, xL, xR, dx, rule),
       })
     }
   } else {
     // method === 'shell' && axis === 'x' : nested cylinders coaxial with X
     const Rmax = maxRadiusX(prof)
     const dr = Rmax / N
+    const A = (r) => 2 * Math.PI * r * axialExtentAtRadius(prof, r).length
     for (let i = 0; i < N; i++) {
-      const rho = dr * (i + 0.5)
-      const { lo: uLo, hi: uHi, length } = axialExtentAtRadius(prof, rho)
+      const rL = dr * i
+      const rR = rL + dr
+      const re = ruleSamplePoint(rL, rR, rule)
+      const { lo: uLo, hi: uHi } = axialExtentAtRadius(prof, re)
       slices.push({
-        uLo, uHi, vIn: Math.max(0, rho - dr / 2), vOut: rho + dr / 2,
-        centerAxial: (uLo + uHi) / 2, centerRadius: rho, thickness: dr,
-        vol: 2 * Math.PI * rho * length * dr,
+        uLo, uHi, vIn: Math.max(0, re - dr / 2), vOut: re + dr / 2,
+        centerAxial: (uLo + uHi) / 2, centerRadius: re, thickness: dr,
+        vol: slabVolume(A, rL, rR, dr, rule),
       })
     }
   }
@@ -331,8 +396,9 @@ export function buildSlices(model, n, method) {
   return { slices, riemann, method, axis }
 }
 
-// Revolve one slice rectangle into a tube/ring geometry.
-function sliceGeometry(slice, axis, segments) {
+// Revolve one slice rectangle into a tube/ring geometry, centered on the line
+// of revolution (offset k).
+function sliceGeometry(slice, axis, segments, offset = 0) {
   const { uLo, uHi, vIn, vOut } = slice
   const rect = [
     { u: uLo, v: vIn },
@@ -340,7 +406,7 @@ function sliceGeometry(slice, axis, segments) {
     { u: uHi, v: vOut },
     { u: uLo, v: vOut },
   ]
-  return revolveSolid({ points: rect, axis }, { angularSegments: segments, sweep: Math.PI * 2 })
+  return revolveSolid({ points: rect, axis, offset }, { angularSegments: segments, sweep: Math.PI * 2 })
 }
 
 /**
@@ -348,13 +414,13 @@ function sliceGeometry(slice, axis, segments) {
  * rendering. Returns { geometry, highlight } where `highlight` is the separate
  * geometry for the slice nearest the highlighted position (or null).
  */
-export function buildSlicesGeometry(slices, axis, highlightIndex = -1) {
+export function buildSlicesGeometry(slices, axis, offset = 0, highlightIndex = -1) {
   const segments = slices.length > 60 ? 28 : 40
   const normal = []
   let highlight = null
   slices.forEach((slice, i) => {
     if (slice.thickness <= 0 || slice.vOut - slice.vIn <= 1e-9) return
-    const geo = sliceGeometry(slice, axis, segments)
+    const geo = sliceGeometry(slice, axis, segments, offset)
     if (i === highlightIndex) highlight = geo
     else normal.push(geo)
   })
@@ -371,6 +437,7 @@ export function buildSlicesGeometry(slices, axis, highlightIndex = -1) {
 export function highlightSliceIndex(model, slices, method, highlightX) {
   if (highlightX == null || slices.length === 0) return -1
   const prof = profileFns(model)
+  const k = model.axisOffset ?? 0
 
   // What coordinate is the slice center compared on — and what the slider maps to.
   let target
@@ -379,7 +446,7 @@ export function highlightSliceIndex(model, slices, method, highlightX) {
     target = highlightX // slabs partitioned along x
     coord = (s) => s.centerAxial
   } else if (method === 'shell' && model.axis === 'y') {
-    target = Math.abs(highlightX) // shells partitioned by radius = |x|
+    target = Math.abs(highlightX - k) // shells partitioned by radius = |x − k|
     coord = (s) => s.centerRadius
   } else if (method === 'disk' && model.axis === 'y') {
     target = safe(model.f, highlightX) // slabs partitioned along height y

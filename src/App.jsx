@@ -12,15 +12,17 @@ export default function App() {
   const model = useMathModel()
   const viewMode = useAppStore((s) => s.viewMode)
   const n = useAppStore((s) => s.n)
+  const riemannRule = useAppStore((s) => s.riemannRule)
 
   // Approximating slices + Riemann sum. Shared by the 3D view (geometry) and the
-  // solution panel (convergence display). Recomputes only on model or n changes.
+  // solution panel (convergence display). Recomputes only when the model, slice
+  // count, or sampling rule changes.
   const sliceData = useMemo(
     () =>
       model.mode === 'crossSection'
-        ? buildCrossSectionSlices(model, n, model.crossSection)
-        : buildSlices(model, n, model.method),
-    [model, n],
+        ? buildCrossSectionSlices(model, n, model.crossSection, riemannRule)
+        : buildSlices(model, n, model.method, riemannRule),
+    [model, n, riemannRule],
   )
 
   return (
