@@ -92,6 +92,19 @@ export function revolveSolid(polygon, opts = {}) {
   const full = sweep >= Math.PI * 2 - 1e-6
   const P = points.length
 
+  // Optional per-vertex gradient (depth cue), colored by axial position u.
+  const colorRamp = opts.colorRamp
+  let uMin = Infinity
+  let uMax = -Infinity
+  if (colorRamp) for (const p of points) { uMin = Math.min(uMin, p.u); uMax = Math.max(uMax, p.u) }
+  const uSpan = uMax - uMin || 1
+  const colors = colorRamp ? [] : null
+  const pushColor = (u) => {
+    if (!colors) return
+    const c = colorRamp((u - uMin) / uSpan)
+    colors.push(c.r, c.g, c.b)
+  }
+
   const positions = []
   const indices = []
 
@@ -101,6 +114,7 @@ export function revolveSolid(polygon, opts = {}) {
     for (let p = 0; p < P; p++) {
       const [x, y, z] = mapPoint(axis, points[p].u, points[p].v, ang, offset)
       positions.push(x, y, z)
+      pushColor(points[p].u)
     }
   }
   const vid = (a, k) => a * P + k
@@ -124,6 +138,7 @@ export function revolveSolid(polygon, opts = {}) {
       for (const p of points) {
         const [x, y, z] = mapPoint(axis, p.u, p.v, ang, offset)
         positions.push(x, y, z)
+        pushColor(p.u)
       }
       for (const t of tris) indices.push(base + t[0], base + t[1], base + t[2])
     }
@@ -131,9 +146,52 @@ export function revolveSolid(polygon, opts = {}) {
 
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+  if (colors) geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
   geo.setIndex(indices)
   geo.computeVertexNormals()
   geo.computeBoundingSphere()
+  return geo
+}
+
+/**
+ * Coarse line grid (latitude rings + meridians) sitting just outside the solid's
+ * surface — a "graph-paper on the surface" depth cue. Generic across axis/offset
+ * via mapPoint. Returns a LineSegments-ready BufferGeometry, or null.
+ */
+export function buildSurfaceGrid(model, sweep = Math.PI * 2) {
+  if (!model.valid) return null
+  const { points, axis, offset } = buildCrossSectionPolygon(model)
+  const P = points.length
+  const MERIDIANS = 12
+  const RING_RES = 64
+  const RINGS = 8
+  const INFLATE = 1.012 // lift lines just off the surface to avoid z-fighting
+  const tiny = 1e-4
+  const pos = []
+  const seg = (A, B) => pos.push(A[0], A[1], A[2], B[0], B[1], B[2])
+  const at = (u, v, ang) => mapPoint(axis, u, v * INFLATE, ang, offset)
+
+  // Meridians: the profile outline traced at evenly spaced angles (skip the
+  // near-zero-radius segments that collapse onto the axis).
+  for (let m = 0; m < MERIDIANS; m++) {
+    const ang = (sweep * m) / MERIDIANS
+    for (let i = 0; i < P - 1; i++) {
+      if (points[i].v < tiny && points[i + 1].v < tiny) continue
+      seg(at(points[i].u, points[i].v, ang), at(points[i + 1].u, points[i + 1].v, ang))
+    }
+  }
+  // Latitude rings: full circles swept at evenly spaced profile positions.
+  for (let r = 0; r <= RINGS; r++) {
+    const idx = Math.round((r / RINGS) * (P - 1))
+    const { u, v } = points[idx]
+    if (v < tiny) continue
+    for (let s = 0; s < RING_RES; s++) {
+      seg(at(u, v, (sweep * s) / RING_RES), at(u, v, (sweep * (s + 1)) / RING_RES))
+    }
+  }
+  if (!pos.length) return null
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
   return geo
 }
 

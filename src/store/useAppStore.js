@@ -32,9 +32,6 @@ export const useAppStore = create((set) => ({
   n: 12,
   riemannRule: 'mid', // 'left' | 'mid' | 'right' | 'trapezoid' — sample rule per slab
 
-  // --- Arc length & surface area of revolution (single curve only) ---
-  showArcSurface: false,
-
   // --- Center viewport mode ---
   viewMode: '2d', // '2d' | '3d'
 
@@ -59,6 +56,9 @@ export const useAppStore = create((set) => ({
   // --- Which result card is hovered → highlight that part in 3D ---
   hoveredResult: null, // null | 'volume' | 'area' | 'arc' | 'surface'
 
+  // --- Cross-section build animation progress (0 = empty, 1 = all slabs) ---
+  buildPct: 1,
+
   // ---------- setters ----------
   setF: (v) => set({ fInput: v }),
   setG: (v) => set({ gInput: v }),
@@ -74,7 +74,6 @@ export const useAppStore = create((set) => ({
   setCrossSection: (v) => set({ crossSection: v }),
   setN: (v) => set({ n: v }),
   setRiemannRule: (v) => set({ riemannRule: v }),
-  setShowArcSurface: (v) => set({ showArcSurface: v }),
   setViewMode: (v) => set({ viewMode: v }),
   setHighlightEnabled: (v) => set({ highlightEnabled: v }),
   setHighlightX: (v) => set({ highlightX: v }),
@@ -85,6 +84,7 @@ export const useAppStore = create((set) => ({
   toggleSolid: () => set((s) => ({ showSolid: !s.showSolid })),
   setSolidView: (v) => set({ solidView: v }),
   setHoveredResult: (v) => set({ hoveredResult: v }),
+  setBuildPct: (v) => set({ buildPct: v }),
 }))
 
 // Dev-only handle for quick inspection/automation in the browser console.

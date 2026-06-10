@@ -143,7 +143,6 @@ export function SolutionPanel({ model, sliceData }) {
   const method = useAppStore((s) => s.method)
   const mode = useAppStore((s) => s.mode)
   const crossSection = useAppStore((s) => s.crossSection)
-  const showArcSurface = useAppStore((s) => s.showArcSurface)
   const riemannRule = useAppStore((s) => s.riemannRule)
   const setHoveredResult = useAppStore((s) => s.setHoveredResult)
   const { valid, error, area, useSecondCurve, volume, solution } = model
@@ -172,7 +171,9 @@ export function SolutionPanel({ model, sliceData }) {
   const kOffTex = k === 0 ? '' : k > 0 ? ` - ${fmt(k, 2)}` : ` + ${fmt(-k, 2)}`
   const surfDistTex =
     model.axis === 'x' ? `\\left|${arcFTex}${kOffTex}\\right|` : `\\left|x${kOffTex}\\right|`
-  const showArc = showArcSurface && !isCross && model.arcLength != null
+  // Arc length & surface area always show whenever they are defined
+  // (single-curve revolution); no toggle needed.
+  const showArc = !isCross && model.arcLength != null
 
   // Per-term Riemann breakdown: first 3 terms + … + last (collapsed by default).
   const ruleLabels = { left: 'ซ้าย', mid: 'กลาง', right: 'ขวา', trapezoid: 'คางหมู' }

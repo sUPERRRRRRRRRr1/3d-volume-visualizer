@@ -63,7 +63,9 @@ export function crossSectionProfile(shape, yLo, yHi, arcSegments = 20) {
 }
 
 // Extrude a (y,z) profile along x from x0 to x1 into a closed prism geometry.
-function buildPrism(profile, x0, x1) {
+// Optional `color` (THREE.Color) fills all vertices with that color so the
+// merged geometry can carry per-prism depth gradient via vertex colors.
+function buildPrism(profile, x0, x1, color = null) {
   const P = profile.length
   const positions = []
   for (const p of profile) positions.push(x0, p.y, p.z) // ring 0: indices 0..P-1
@@ -80,6 +82,16 @@ function buildPrism(profile, x0, x1) {
   const geo = new THREE.BufferGeometry()
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
   geo.setIndex(idx)
+  if (color) {
+    const nv = positions.length / 3
+    const cols = new Float32Array(nv * 3)
+    for (let i = 0; i < nv; i++) {
+      cols[i * 3] = color.r
+      cols[i * 3 + 1] = color.g
+      cols[i * 3 + 2] = color.b
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3))
+  }
   geo.computeVertexNormals()
   return geo
 }
@@ -115,8 +127,13 @@ export function buildCrossSectionSlices(model, n, shape, rule = 'mid') {
   return { slices, riemann: slices.reduce((a, b) => a + b.vol, 0), shape, mode: 'crossSection' }
 }
 
-/** Merge slab prisms; the highlighted slab is returned separately. */
-export function buildCrossSectionGeometry(slices, shape, highlightIndex = -1) {
+/**
+ * Merge slab prisms; the highlighted slab is returned separately.
+ * opts.colorRamp(t) → THREE.Color  — depth gradient (t = 0 at lo, 1 at hi)
+ * opts.lo / opts.hi                — axial bounds for normalizing t
+ */
+export function buildCrossSectionGeometry(slices, shape, highlightIndex = -1, opts = {}) {
+  const { colorRamp, lo = 0, hi = 1 } = opts
   const arc = slices.length > 60 ? 14 : 22
   const normal = []
   let highlight = null
@@ -124,7 +141,10 @@ export function buildCrossSectionGeometry(slices, shape, highlightIndex = -1) {
     if (sl.s <= 1e-9) return
     const profile = crossSectionProfile(shape, sl.yLo, sl.yHi, arc)
     if (profile.length < 3) return
-    const geo = buildPrism(profile, sl.uLo, sl.uHi)
+    const color = colorRamp
+      ? colorRamp(Math.max(0, Math.min(1, (sl.centerAxial - lo) / (hi - lo || 1))))
+      : null
+    const geo = buildPrism(profile, sl.uLo, sl.uHi, color)
     if (i === highlightIndex) highlight = geo
     else normal.push(geo)
   })

@@ -113,7 +113,6 @@ export function ControlPanel({ model }) {
   const highlightEnabled = useAppStore((s) => s.highlightEnabled)
   const highlightX = useAppStore((s) => s.highlightX)
   const isAnimating = useAppStore((s) => s.isAnimating)
-  const showArcSurface = useAppStore((s) => s.showArcSurface)
 
   const setF = useAppStore((s) => s.setF)
   const setG = useAppStore((s) => s.setG)
@@ -131,9 +130,9 @@ export function ControlPanel({ model }) {
   const setSolidView = useAppStore((s) => s.setSolidView)
   const setHighlightEnabled = useAppStore((s) => s.setHighlightEnabled)
   const setHighlightX = useAppStore((s) => s.setHighlightX)
-  const setShowArcSurface = useAppStore((s) => s.setShowArcSurface)
   const setAnimating = useAppStore((s) => s.setAnimating)
   const setSweepDeg = useAppStore((s) => s.setSweepDeg)
+  const setBuildPct = useAppStore((s) => s.setBuildPct)
 
   const fError = model.f && !model.f.ok ? model.f.error : null
   const gError = useSecondCurve && model.g && !model.g.ok ? model.g.error : null
@@ -144,6 +143,16 @@ export function ControlPanel({ model }) {
     } else {
       setViewMode('3d')
       setSweepDeg(0)
+      setAnimating(true)
+    }
+  }
+
+  const playBuildAnimation = () => {
+    if (isAnimating) {
+      setAnimating(false)
+    } else {
+      setViewMode('3d')
+      setBuildPct(0)
       setAnimating(true)
     }
   }
@@ -256,18 +265,6 @@ export function ControlPanel({ model }) {
             </Field>
           </section>
 
-          {!useSecondCurve && (
-            <section className="rounded-lg border border-slate-700 bg-slate-900/40 p-3">
-              <Toggle
-                checked={showArcSurface}
-                onChange={setShowArcSurface}
-                label="ความยาวส่วนโค้ง & พื้นที่ผิว"
-              />
-              <p className="mt-1 text-xs text-slate-500">
-                L = ∫√(1+f′²)dx · S = 2π∫ r·√(1+f′²) dx (เส้นเดียว)
-              </p>
-            </section>
-          )}
         </>
       )}
 
@@ -315,7 +312,7 @@ export function ControlPanel({ model }) {
         </Field>
       </section>
 
-      {/* 3D display mode (revolution only) */}
+      {/* 3D display mode (revolution) */}
       {viewMode === '3d' && mode === 'revolution' && (
         <section>
           <Field label="การแสดงผล 3 มิติ">
@@ -329,7 +326,26 @@ export function ControlPanel({ model }) {
               ]}
             />
             <p className="mt-1 text-xs text-slate-500">
-              “ของแข็งเรียบ” ซ่อนแผ่นประมาณ เห็นรูปทรงชัด
+              "ของแข็งเรียบ" ซ่อนแผ่นประมาณ เห็นรูปทรงชัด
+            </p>
+          </Field>
+        </section>
+      )}
+
+      {/* 3D display mode (cross-section) */}
+      {viewMode === '3d' && mode === 'crossSection' && (
+        <section>
+          <Field label="การแสดงผล 3 มิติ">
+            <Segmented
+              value={solidView === 'solid' ? 'solid' : 'slices'}
+              onChange={setSolidView}
+              options={[
+                { value: 'slices', label: 'แสดงเส้นแผ่น' },
+                { value: 'solid', label: 'ของแข็งเรียบ' },
+              ]}
+            />
+            <p className="mt-1 text-xs text-slate-500">
+              "ของแข็งเรียบ" ซ่อนขอบแผ่น เห็นรูปทรงทั้งก้อน
             </p>
           </Field>
         </section>
@@ -361,11 +377,20 @@ export function ControlPanel({ model }) {
         </Field>
       </section>
 
-      {/* Revolution animation (revolution mode only) */}
+      {/* Revolution animation */}
       {mode === 'revolution' && (
         <section>
           <Button variant="amber" onClick={playAnimation} className="w-full">
             {isAnimating ? '■ หยุด' : '▶ หมุนสร้างของแข็ง 360°'}
+          </Button>
+        </section>
+      )}
+
+      {/* Cross-section build animation */}
+      {mode === 'crossSection' && (
+        <section>
+          <Button variant="amber" onClick={playBuildAnimation} className="w-full">
+            {isAnimating ? '■ หยุด' : '▶ สร้างของแข็งทีละแผ่น'}
           </Button>
         </section>
       )}

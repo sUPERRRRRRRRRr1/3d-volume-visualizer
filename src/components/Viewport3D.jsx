@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useRef } from 'react'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
-import { OrbitControls, Grid, Line, Text, Edges } from '@react-three/drei'
+import { OrbitControls, Grid, Line, Text, Edges, Billboard } from '@react-three/drei'
 import * as THREE from 'three'
 import { useAppStore } from '../store/useAppStore'
 import {
@@ -10,6 +10,7 @@ import {
   buildSlicesGeometry,
   highlightSliceIndex,
   buildRegionMesh,
+  buildSurfaceGrid,
 } from '../lib/geometry'
 import {
   buildCrossSectionGeometry,
@@ -21,14 +22,23 @@ import { niceTicks } from '../lib/format'
 
 // The revolved solid mesh. Geometry is regenerated only when the math model or
 // the sweep angle changes (NOT on every orbit/zoom frame).
+// Cool depth gradient (deep indigo -> cyan) applied along the solid's axis, so
+// points at different depths read as different shades — a strong 3D cue.
+const _rampLo = new THREE.Color('#1e3a8a')
+const _rampHi = new THREE.Color('#22d3ee')
+const _rampScratch = new THREE.Color()
+const depthRamp = (t) => _rampScratch.copy(_rampLo).lerp(_rampHi, t < 0 ? 0 : t > 1 ? 1 : t)
+
 // Smooth revolved solid. Geometry is built once in Viewport3D and passed in so
-// the result-highlight overlay can reuse the same mesh.
+// the result-highlight overlay can reuse the same mesh. Vertex colors carry the
+// depth gradient (the geometry is built with depthRamp).
 function RevolutionSolid({ geo, visible, opacity, outline }) {
   if (!geo || !visible) return null
   return (
     <mesh geometry={geo}>
       <meshStandardMaterial
-        color={COLORS3D.solid}
+        color="#ffffff"
+        vertexColors
         side={THREE.DoubleSide}
         transparent
         opacity={opacity}
@@ -137,20 +147,38 @@ function Slices({ model, sliceData }) {
   )
 }
 
-// Known-cross-section slabs (prisms standing on the base region). `glow` lights
-// the prisms when the volume card is hovered; `dim` fades them for other hovers.
-function CrossSectionPrisms({ model, sliceData, glow, dim }) {
+// Known-cross-section slabs (prisms standing on the base region).
+//   glow      → orange emissive when volume card is hovered
+//   dim       → very transparent when another card is hovered
+//   showEdges → whether slab borders are visible (false = "smooth solid" look)
+//   colorRamp → depth gradient function (t 0→1) for vertex colors
+function CrossSectionPrisms({ model, sliceData, glow, dim, showEdges = true, colorRamp }) {
   const showSlices = useAppStore((s) => s.showSlices)
   const highlightEnabled = useAppStore((s) => s.highlightEnabled)
   const highlightX = useAppStore((s) => s.highlightX)
+  const isAnimating = useAppStore((s) => s.isAnimating)
+  const buildPct = useAppStore((s) => s.buildPct)
 
   const hlIndex = useMemo(
-    () => (highlightEnabled ? highlightCrossSectionIndex(sliceData.slices, highlightX) : -1),
-    [sliceData, highlightEnabled, highlightX],
+    () => (highlightEnabled && !isAnimating ? highlightCrossSectionIndex(sliceData.slices, highlightX) : -1),
+    [sliceData, highlightEnabled, highlightX, isAnimating],
   )
+
+  // During build animation, only show the first N slabs.
+  const visibleSlices = useMemo(() => {
+    if (!isAnimating || buildPct >= 1) return sliceData.slices
+    const n = Math.max(1, Math.ceil(buildPct * sliceData.slices.length))
+    return sliceData.slices.slice(0, n)
+  }, [sliceData.slices, isAnimating, buildPct])
+
   const { geometry, highlight } = useMemo(
-    () => buildCrossSectionGeometry(sliceData.slices, model.crossSection, hlIndex),
-    [sliceData, model.crossSection, hlIndex],
+    () =>
+      buildCrossSectionGeometry(visibleSlices, model.crossSection, hlIndex, {
+        colorRamp,
+        lo: model.lo,
+        hi: model.hi,
+      }),
+    [visibleSlices, model.crossSection, hlIndex, colorRamp, model.lo, model.hi],
   )
   useEffect(
     () => () => {
@@ -160,12 +188,14 @@ function CrossSectionPrisms({ model, sliceData, glow, dim }) {
     [geometry, highlight],
   )
   if (!showSlices) return null
+  const useVertexColors = !glow && colorRamp != null
   return (
     <group>
       {geometry && (
         <mesh geometry={geometry}>
           <meshStandardMaterial
-            color={glow ? HIGHLIGHT.volume : COLORS3D.crossSection}
+            color={glow ? HIGHLIGHT.volume : '#ffffff'}
+            vertexColors={useVertexColors}
             side={THREE.DoubleSide}
             transparent
             opacity={dim ? 0.12 : 0.85}
@@ -175,8 +205,7 @@ function CrossSectionPrisms({ model, sliceData, glow, dim }) {
             emissiveIntensity={glow ? 0.6 : 0}
             flatShading
           />
-          {/* outline each slab so the stacked 3D structure reads clearly */}
-          <Edges threshold={18} color="#4c1d95" />
+          {showEdges && <Edges threshold={18} color="#4c1d95" />}
         </mesh>
       )}
       {highlight && (
@@ -189,6 +218,18 @@ function CrossSectionPrisms({ model, sliceData, glow, dim }) {
 }
 
 const tickText = (v) => Number(v.toFixed(2)).toString()
+
+// A text label that always faces the camera, so axis numbers/letters stay
+// readable (never mirrored) when the view is orbited around.
+function BillboardText({ position, fontSize, color, children }) {
+  return (
+    <Billboard position={position}>
+      <Text fontSize={fontSize} color={color} anchorX="center" anchorY="middle">
+        {children}
+      </Text>
+    </Billboard>
+  )
+}
 
 // Numbered length scale along one world axis ('x' | 'y' | 'z'): a short
 // perpendicular mark + a numeric label at each "nice" tick over [-L, L]. Ticks
@@ -212,9 +253,9 @@ function AxisTicks({ L, dir }) {
         return (
           <group key={`${dir}${t}`}>
             <Line points={[a, b]} color={color} lineWidth={1} />
-            <Text position={lp} fontSize={fs} color="#94a3b8" anchorX="center" anchorY="middle">
+            <BillboardText position={lp} fontSize={fs} color="#94a3b8">
               {tickText(t)}
-            </Text>
+            </BillboardText>
           </group>
         )
       })}
@@ -241,9 +282,9 @@ function Axes({ size, axis, offset = 0 }) {
       {axis === 'y' && (
         <Line points={[[offset, -L, 0], [offset, L, 0]]} color={COLORS3D.revolveAxis} lineWidth={3.5} />
       )}
-      <Text position={[L + 0.08 * L, 0, 0]} fontSize={0.14 * L} color={COLORS3D.axisX}>X</Text>
-      <Text position={[0, L + 0.08 * L, 0]} fontSize={0.14 * L} color={COLORS3D.axisY}>Y</Text>
-      <Text position={[0, 0, L + 0.08 * L]} fontSize={0.14 * L} color={COLORS3D.axisZ}>Z</Text>
+      <BillboardText position={[L + 0.08 * L, 0, 0]} fontSize={0.14 * L} color={COLORS3D.axisX}>X</BillboardText>
+      <BillboardText position={[0, L + 0.08 * L, 0]} fontSize={0.14 * L} color={COLORS3D.axisY}>Y</BillboardText>
+      <BillboardText position={[0, 0, L + 0.08 * L]} fontSize={0.14 * L} color={COLORS3D.axisZ}>Z</BillboardText>
     </group>
   )
 }
@@ -270,18 +311,32 @@ function CameraRig({ frame, controlsRef }) {
   return null
 }
 
-// Advances the revolution sweep angle 0° → 360°, then stops (revolution mode).
+// Advances animation for whichever mode is active:
+//   revolution  → sweep 0°→360° at 110 deg/s
+//   crossSection → build 0→1 at 0.4/s (full build in ~2.5 s)
 function AnimationDriver() {
   const isAnimating = useAppStore((s) => s.isAnimating)
+  const mode = useAppStore((s) => s.mode)
   useFrame((_, delta) => {
     if (!isAnimating) return
-    const { sweepDeg, setSweepDeg, setAnimating } = useAppStore.getState()
-    const next = sweepDeg + delta * 110
-    if (next >= 360) {
-      setSweepDeg(360)
-      setAnimating(false)
+    if (mode === 'revolution') {
+      const { sweepDeg, setSweepDeg, setAnimating } = useAppStore.getState()
+      const next = sweepDeg + delta * 110
+      if (next >= 360) {
+        setSweepDeg(360)
+        setAnimating(false)
+      } else {
+        setSweepDeg(next)
+      }
     } else {
-      setSweepDeg(next)
+      const { buildPct, setBuildPct, setAnimating } = useAppStore.getState()
+      const next = buildPct + delta * 0.4
+      if (next >= 1) {
+        setBuildPct(1)
+        setAnimating(false)
+      } else {
+        setBuildPct(next)
+      }
     }
   })
   return null
@@ -308,10 +363,22 @@ export function Viewport3D({ model, sliceData, children }) {
     () =>
       isCross || !model.valid
         ? null
-        : revolveSolid(buildCrossSectionPolygon(model), { angularSegments: 72, sweep }),
+        : revolveSolid(buildCrossSectionPolygon(model), {
+            angularSegments: 72,
+            sweep,
+            colorRamp: depthRamp,
+          }),
     [model, sweep, isCross],
   )
   useEffect(() => () => revoGeo && revoGeo.dispose(), [revoGeo])
+
+  // Surface grid lines (rings + meridians) — a "graph-paper" depth cue, shown in
+  // the smooth-solid mode where the single surface most needs depth help.
+  const gridGeo = useMemo(
+    () => (isCross || !model.valid || solidView !== 'solid' ? null : buildSurfaceGrid(model, sweep)),
+    [model, sweep, isCross, solidView],
+  )
+  useEffect(() => () => gridGeo && gridGeo.dispose(), [gridGeo])
 
   // Unified camera frame + axes/grid sizing, computed per mode.
   const scene = useMemo(() => {
@@ -391,6 +458,8 @@ export function Viewport3D({ model, sliceData, children }) {
                 sliceData={sliceData}
                 glow={hoveredResult === 'volume'}
                 dim={dimmed && hoveredResult !== 'volume'}
+                showEdges={solidView !== 'solid'}
+                colorRamp={depthRamp}
               />
             )}
             {hoveredResult === 'area' && <RegionHighlight model={model} />}
@@ -403,6 +472,11 @@ export function Viewport3D({ model, sliceData, children }) {
               opacity={solidOpacity}
               outline={!dimmed && !isAnimating && solidView === 'solid'}
             />
+            {gridGeo && !isAnimating && !dimmed && (
+              <lineSegments geometry={gridGeo}>
+                <lineBasicMaterial color="#bae6fd" transparent opacity={0.32} depthWrite={false} />
+              </lineSegments>
+            )}
             {sliceData && !isAnimating && !dimmed && solidView !== 'solid' && (
               <Slices model={model} sliceData={sliceData} />
             )}
